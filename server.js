@@ -8,7 +8,7 @@ const cors = require('cors');
 const app = express();
 
 // Photos come in as base64 text, which is bigger than plain form data — raise the body size limit.
-app.use(cors());
+app.use(cors({ origin: 'https://taghiniamedia.github.io' }));
 app.use(express.json({ limit: '15mb' }));
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
