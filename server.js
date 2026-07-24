@@ -4,12 +4,27 @@
 
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 
-// Photos come in as base64 text, which is bigger than plain form data — raise the body size limit.
+// Security headers
+app.use(helmet());
+
+// Only your site can call this server
 app.use(cors({ origin: 'https://taghiniamedia.github.io' }));
+
+// Photos come in as base64 text, which is bigger than plain form data — raise the body size limit.
 app.use(express.json({ limit: '15mb' }));
+
+// Limit each visitor to 20 requests per minute, to stop abuse or runaway costs
+const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  message: { error: 'Too many requests. Please wait a minute and try again.' }
+});
+app.use('/describe', limiter);
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 if (!ANTHROPIC_API_KEY) {
@@ -80,7 +95,4 @@ app.post('/describe', async (req, res) => {
   }
 });
 
-app.get('/health', (req, res) => res.send('ok'));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`See & Say server running on port ${PORT}`));
+app.get('/health', (req, res) =>
