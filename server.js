@@ -1,86 +1,95 @@
 const express = require("express");
 const cors = require("cors");
-const Anthropic = require("@anthropic-ai/sdk");
 
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: "25mb" }));
+app.use(express.json({ limit: "15mb" }));
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY
-});
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+async function callClaude(messages, maxTokens = 1000) {
+  if (!ANTHROPIC_API_KEY) {
+    throw new Error("Missing ANTHROPIC_API_KEY");
+  }
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01"
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: maxTokens,
+      messages
+    })
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error("Anthropic API error:", data);
+    throw new Error("Anthropic request failed");
+  }
+
+  const textBlock = (data.content || []).find(
+    item => item.type === "text"
+  );
+
+  return textBlock?.text || "";
+}
 
 app.get("/", (req, res) => {
   res.send("Know N'Go server is running.");
 });
 
-app.post("/describe", async (req, res) => {
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+app.post("/ask", async (req, res) => {
   try {
-    const { question, image, mediaType } = req.body;
+    const question =
+      req.body.question ||
+      req.body.message ||
+      req.body.prompt;
 
-    const cleanQuestion =
-      typeof question === "string" ? question.trim() : "";
-
-    if (!cleanQuestion && !image) {
+    if (!question || !question.trim()) {
       return res.status(400).json({
-        error: "Please type a question or choose a photo."
+        error: "Please enter a question."
       });
     }
 
-    const content = [];
+    const answer = await callClaude([
+      {
+        role: "user",
+        content:
+          "You are the Know N'Go Personal concierge. " +
+          "Give helpful, practical, clear answers. " +
+          "Keep answers concise unless the user asks for more detail. " +
+          "The service is designed to be highly accessible, including for people using screen readers. " +
+          "User question: " +
+          question.trim()
+      }
+    ]);
 
-    if (image) {
-      content.push({
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: mediaType || "image/jpeg",
-          data: image
-        }
-      });
-    }
-
-    content.push({
-      type: "text",
-      text:
-        cleanQuestion ||
-        "Describe this image clearly and tell me the most useful information about it."
-    });
-
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1200,
-      system:
-        "You are Know N'Go Personal. Answer clearly, directly, and helpfully. If an image is included, analyze it carefully and answer the user's question about it. Never invent details that are not visible.",
-      messages: [
-        {
-          role: "user",
-          content
-        }
-      ]
-    });
-
-    const answer = message.content
-      .filter(item => item.type === "text")
-      .map(item => item.text)
-      .join("\n")
-      .trim();
-
-    return res.json({
-      answer: answer || "I could not generate a response."
+    res.json({
+      answer,
+      response: answer,
+      message: answer
     });
   } catch (error) {
-    console.error("Know N'Go error:", error);
+    console.error("Ask error:", error);
 
-    return res.status(500).json({
-      error: "The assistant could not process that request."
+    res.status(500).json({
+      error: "I couldn't answer that right now. Please try again."
     });
   }
 });
 
-const PORT = process.env.PORT || 3000;
+function buildVisionPrompt(question) {
+  return `You are the Know N'Go vision assistant for a blind user.
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Know N'Go server running on port ${PORT}`);
-});
+Look
