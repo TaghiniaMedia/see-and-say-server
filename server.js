@@ -1,6 +1,4 @@
-// See & Say backend
-// Holds the prompt and the Claude API key on the server, not in the browser.
-// The phone sends a photo here; this server talks to Claude and sends back only the answer.
+// Know N'Go backend
 
 const express = require('express');
 const cors = require('cors');
@@ -13,101 +11,157 @@ app.use(express.json({ limit: '15mb' }));
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 if (!ANTHROPIC_API_KEY) {
-  console.error('Missing ANTHROPIC_API_KEY environment variable. Set it before starting the server.');
+  console.error('Missing ANTHROPIC_API_KEY environment variable.');
 }
 
-function buildPrompt(userQuestion) {
-  return `You are a description engine for a blind user. Look at this photo and respond ONLY with a JSON object with four keys:
-"confident" (what you can clearly see — objects, setting, condition, and any visible text, translated to English if it's in another language),
-"hazard" (if you see anything potentially harmful — a spider, scorpion, snake, spill, tripping hazard, an appliance left on, etc — flag it clearly here and say to back away or get it checked; if nothing looks hazardous, say "Nothing hazardous spotted"),
-"needs_closer_photo" (anything you are not confident about — be honest, say "Nothing — the photo is clear" if there is nothing uncertain),
-"suggestion" (one practical next action for the user — if this looks like a product, price tag, or grocery item, mention it could be ordered through a grocery delivery app or Amazon; if it's a sign or menu in another language, offer to translate more of it).
-${userQuestion ? `The user specifically asked: "${userQuestion}". Prioritize answering that in the confident and suggestion fields.` : ''}
-Respond with ONLY the JSON object, no markdown fences, no preamble.`;
+function photoPrompt(question) {
+  return `You are Know N'Go, an accessibility-first AI assistant.
+
+Describe this photo clearly and practically for a blind or low-vision user.
+
+Respond ONLY with valid JSON using exactly these four keys:
+
+"confident": Clearly describe what you can see, including objects, people, surroundings, condition, colors when useful, and visible text. Translate visible foreign-language text into English when possible.
+
+"hazard": Clearly identify anything potentially dangerous such as traffic, stairs, obstacles, spills, fire, exposed wires, animals, sharp objects, or other hazards. If no hazard is visible, say "Nothing hazardous spotted."
+
+"needs_closer_photo": State anything important you cannot identify confidently. If everything important is clear, say "Nothing — the photo is clear."
+
+"suggestion": Give one useful next action.
+
+${question ? `The user specifically asked: "${question}". Answer that question directly in the "confident" field.` : ''}
+
+Do not use markdown.
+Do not add text before or after the JSON object.`;
+}
+
+function questionPrompt(question) {
+  return `You are Know N'Go, an accessibility-first personal AI assistant.
+
+Answer the user's question directly, clearly, and concisely.
+
+User question:
+"${question}"
+
+Respond ONLY with valid JSON using exactly these four keys:
+
+"confident": Put your complete answer here.
+"hazard": ""
+"needs_closer_photo": ""
+"suggestion": ""
+
+Do not use markdown.
+Do not add text before or after the JSON object.`;
 }
 
 app.post('/describe', async (req, res) => {
   try {
-    const { image, mediaType, question } = req.body;
+    const { image, mediaType, question } = req.body || {};
 
-    if (!image) {
-      return res.status(400).json({ error: 'No image provided.' });
+    const cleanQuestion =
+      typeof question === 'string' ? question.trim() : '';
+
+    if (!image && !cleanQuestion) {
+      return res.status(400).json({
+        error: 'Please provide a photo or ask a question.'
+      });
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: mediaType || 'image/jpeg',
-                  data: image
-                }
-              },
-              {
-                type: 'text',
-                text: buildPrompt(question)
-              }
-            ]
-          }
-        ]
-      })
-    });
+    const content = [];
+
+    if (image) {
+      content.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: mediaType || 'image/jpeg',
+          data: image
+        }
+      });
+
+      content.push({
+        type: 'text',
+        text: photoPrompt(cleanQuestion)
+      });
+    } else {
+      content.push({
+        type: 'text',
+        text: questionPrompt(cleanQuestion)
+      });
+    }
+
+    const response = await fetch(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 1200,
+          messages: [
+            {
+              role: 'user',
+              content
+            }
+          ]
+        })
+      }
+    );
 
     const data = await response.json();
 
     if (!response.ok) {
       console.error('Anthropic API error:', data);
+
       return res.status(502).json({
-        error: 'The description service had a problem. Try again.'
+        error: 'Know N\'Go AI is temporarily unavailable. Please try again.'
       });
     }
 
-    const textBlock = (data.content || []).find(item => item.type === 'text');
+    const textBlock = (data.content || []).find(
+      item => item.type === 'text'
+    );
+
+    const rawText = textBlock?.text || '';
 
     let parsed;
 
     try {
-      const clean = (textBlock?.text || '')
-        .replace(/```json|```/g, '')
+      const clean = rawText
+        .replace(/```json/gi, '')
+        .replace(/```/g, '')
         .trim();
 
       parsed = JSON.parse(clean);
-    } catch (e) {
+    } catch (error) {
       parsed = {
-        confident: textBlock?.text || 'No description returned.',
+        confident: rawText || 'No response returned.',
         hazard: '',
         needs_closer_photo: '',
         suggestion: ''
       };
     }
 
-    res.json(parsed);
-  } catch (err) {
-    console.error('Server error:', err);
+    return res.json(parsed);
+  } catch (error) {
+    console.error('Know N\'Go server error:', error);
 
-    res.status(500).json({
-      error: 'Something went wrong on the server. Try again.'
+    return res.status(500).json({
+      error: 'Something went wrong. Please try again.'
     });
   }
 });
 
-app.get('/health', (req, res) => res.send('ok'));
+app.get('/health', (req, res) => {
+  res.status(200).send('Know N\'Go server is running');
+});
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`See & Say server running on port ${PORT}`);
+  console.log(`Know N'Go server running on port ${PORT}`);
 });
