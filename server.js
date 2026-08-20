@@ -173,4 +173,90 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log(`Know N'Go server running on port ${PORT}`);
+});      'I could not get a description from that image.';
+
+    res.json({
+      answer
+    });
+
+  } catch (error) {
+    console.error('Server error:', error);
+
+    res.status(500).json({
+      error: 'Something went wrong. Please try again.'
+    });
+  }
+});
+
+app.post('/ask', async (req, res) => {
+  try {
+    const { question } = req.body;
+
+    if (!question || !question.trim()) {
+      return res.status(400).json({
+        error: 'Please enter a question.'
+      });
+    }
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1000,
+        system:
+          "You are the Know N'Go Personal AI assistant. Give direct, useful, accessible answers. Keep answers clear and concise unless the user asks for more detail.",
+        messages: [
+          {
+            role: 'user',
+            content: question.trim()
+          }
+        ]
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error('Anthropic API error:', data);
+
+      return res.status(502).json({
+        error: 'Know N\'Go could not answer right now. Please try again.'
+      });
+    }
+
+    const textBlock = (data.content || []).find(
+      item => item.type === 'text'
+    );
+
+    res.json({
+      answer:
+        textBlock?.text ||
+        'I could not generate an answer.'
+    });
+
+  } catch (error) {
+    console.error('Server error:', error);
+
+    res.status(500).json({
+      error: 'Something went wrong. Please try again.'
+    });
+  }
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: "Know N'Go"
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Know N'Go server running on port ${PORT}`);
 });
