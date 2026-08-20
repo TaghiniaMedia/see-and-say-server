@@ -1,3 +1,7 @@
+// See & Say backend
+// Holds the prompt and the Claude API key on the server, not in the browser.
+// The phone sends a photo here; this server talks to Claude and sends back only the answer.
+
 const express = require('express');
 const cors = require('cors');
 
@@ -8,140 +12,26 @@ app.use(express.json({ limit: '15mb' }));
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
-app.get('/', (req, res) => {
-  res.json({
-    status: 'Know N\'Go server is running'
-  });
-});
+if (!ANTHROPIC_API_KEY) {
+  console.error('Missing ANTHROPIC_API_KEY environment variable. Set it before starting the server.');
+}
 
-app.get('/health', (req, res) => {
-  res.json({
-    ok: true
-  });
-});
+function buildPrompt(userQuestion) {
+  return `You are a description engine for a blind user. Look at this photo and respond ONLY with a JSON object with four keys:
+"confident" (what you can clearly see — objects, setting, condition, and any visible text, translated to English if it's in another language),
+"hazard" (if you see anything potentially harmful — a spider, scorpion, snake, spill, tripping hazard, an appliance left on, etc — flag it clearly here and say to back away or get it checked; if nothing looks hazardous, say "Nothing hazardous spotted"),
+"needs_closer_photo" (anything you are not confident about — be honest, say "Nothing — the photo is clear" if there is nothing uncertain),
+"suggestion" (one practical next action for the user — if this looks like a product, price tag, or grocery item, mention it could be ordered through a grocery delivery app or Amazon; if it's a sign or menu in another language, offer to translate more of it).
+${userQuestion ? `The user specifically asked: "${userQuestion}". Prioritize answering that in the confident and suggestion fields.` : ''}
+Respond with ONLY the JSON object, no markdown fences, no preamble.`;
+}
 
-app.post('/api/ask', async (req, res) => {
+app.post('/describe', async (req, res) => {
   try {
-    if (!ANTHROPIC_API_KEY) {
-      return res.status(500).json({
-        error: 'ANTHROPIC_API_KEY is not configured.'
-      });
-    }
+    const { image, mediaType, question } = req.body;
 
-    const question =
-      req.body.question ||
-      req.body.message ||
-      req.body.prompt ||
-      '';
-
-    const image =
-      req.body.image ||
-      req.body.imageBase64 ||
-      null;
-
-    if (!question.trim() && !image) {
-      return res.status(400).json({
-        error: 'Please enter a question or provide an image.'
-      });
-    }
-
-    const content = [];
-
-    if (image) {
-      let mediaType = 'image/jpeg';
-      let imageData = image;
-
-      if (image.startsWith('data:')) {
-        const match = image.match(
-          /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/
-        );
-
-        if (match) {
-          mediaType = match[1];
-          imageData = match[2];
-        }
-      }
-
-      content.push({
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: mediaType,
-          data: imageData
-        }
-      });
-    }
-
-    content.push({
-      type: 'text',
-      text:
-        question.trim() ||
-        'Describe this image clearly and practically. Pay special attention to text, objects, people, hazards, navigation details, controls, labels, and anything important for a blind user.'
-    });
-
-    const response = await fetch(
-      'https://api.anthropic.com/v1/messages',
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1200,
-          system:
-            'You are the Know N\'Go personal AI concierge. Give clear, direct, practical answers. When analyzing images for blind users, describe the most useful information first, including text, objects, location, hazards, navigation information, controls, and actionable next steps.',
-          messages: [
-            {
-              role: 'user',
-              content
-            }
-          ]
-        })
-      }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error('Anthropic error:', data);
-
-      return res.status(response.status).json({
-        error:
-          data?.error?.message ||
-          'The AI service returned an error.'
-      });
-    }
-
-    const answer = Array.isArray(data.content)
-      ? data.content
-          .filter(item => item.type === 'text')
-          .map(item => item.text)
-          .join('\n')
-          .trim()
-      : '';
-
-    res.json({
-      answer: answer || 'No response was returned.'
-    });
-  } catch (error) {
-    console.error('Server error:', error);
-
-    res.status(500).json({
-      error: 'Unable to reach the AI service.'
-    });
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`Know N'Go server running on port ${PORT}`);
-});      return res.status(400).json({
-        error: 'No image provided.'
-      });
+    if (!image) {
+      return res.status(400).json({ error: 'No image provided.' });
     }
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -153,7 +43,7 @@ app.listen(PORT, () => {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1200,
+        max_tokens: 1000,
         messages: [
           {
             role: 'user',
@@ -180,188 +70,44 @@ app.listen(PORT, () => {
 
     if (!response.ok) {
       console.error('Anthropic API error:', data);
-
       return res.status(502).json({
-        error: 'Know N\'Go could not analyze this right now. Please try again.'
+        error: 'The description service had a problem. Try again.'
       });
     }
 
-    const textBlock = (data.content || []).find(
-      item => item.type === 'text'
-    );
+    const textBlock = (data.content || []).find(item => item.type === 'text');
 
-    const answer =
-      textBlock?.text ||
-      'I could not get a description from that image.';
+    let parsed;
 
-    res.json({
-      answer
-    });
+    try {
+      const clean = (textBlock?.text || '')
+        .replace(/```json|```/g, '')
+        .trim();
 
-  } catch (error) {
-    console.error('Server error:', error);
+      parsed = JSON.parse(clean);
+    } catch (e) {
+      parsed = {
+        confident: textBlock?.text || 'No description returned.',
+        hazard: '',
+        needs_closer_photo: '',
+        suggestion: ''
+      };
+    }
+
+    res.json(parsed);
+  } catch (err) {
+    console.error('Server error:', err);
 
     res.status(500).json({
-      error: 'Something went wrong. Please try again.'
+      error: 'Something went wrong on the server. Try again.'
     });
   }
 });
 
-app.post('/ask', async (req, res) => {
-  try {
-    const { question } = req.body;
-
-    if (!question || !question.trim()) {
-      return res.status(400).json({
-        error: 'Please enter a question.'
-      });
-    }
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        system:
-          "You are the Know N'Go Personal AI assistant. Give direct, useful, accessible answers. Keep answers clear and concise unless the user asks for more detail.",
-        messages: [
-          {
-            role: 'user',
-            content: question.trim()
-          }
-        ]
-      })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error('Anthropic API error:', data);
-
-      return res.status(502).json({
-        error: 'Know N\'Go could not answer right now. Please try again.'
-      });
-    }
-
-    const textBlock = (data.content || []).find(
-      item => item.type === 'text'
-    );
-
-    res.json({
-      answer:
-        textBlock?.text ||
-        'I could not generate an answer.'
-    });
-
-  } catch (error) {
-    console.error('Server error:', error);
-
-    res.status(500).json({
-      error: 'Something went wrong. Please try again.'
-    });
-  }
-});
-
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: "Know N'Go"
-  });
-});
+app.get('/health', (req, res) => res.send('ok'));
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`Know N'Go server running on port ${PORT}`);
-});      'I could not get a description from that image.';
-
-    res.json({
-      answer
-    });
-
-  } catch (error) {
-    console.error('Server error:', error);
-
-    res.status(500).json({
-      error: 'Something went wrong. Please try again.'
-    });
-  }
-});
-
-app.post('/ask', async (req, res) => {
-  try {
-    const { question } = req.body;
-
-    if (!question || !question.trim()) {
-      return res.status(400).json({
-        error: 'Please enter a question.'
-      });
-    }
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        system:
-          "You are the Know N'Go Personal AI assistant. Give direct, useful, accessible answers. Keep answers clear and concise unless the user asks for more detail.",
-        messages: [
-          {
-            role: 'user',
-            content: question.trim()
-          }
-        ]
-      })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error('Anthropic API error:', data);
-
-      return res.status(502).json({
-        error: 'Know N\'Go could not answer right now. Please try again.'
-      });
-    }
-
-    const textBlock = (data.content || []).find(
-      item => item.type === 'text'
-    );
-
-    res.json({
-      answer:
-        textBlock?.text ||
-        'I could not generate an answer.'
-    });
-
-  } catch (error) {
-    console.error('Server error:', error);
-
-    res.status(500).json({
-      error: 'Something went wrong. Please try again.'
-    });
-  }
-});
-
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: "Know N'Go"
-  });
-});
-
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`Know N'Go server running on port ${PORT}`);
+  console.log(`See & Say server running on port ${PORT}`);
 });
