@@ -1,6 +1,3 @@
-// Know N'Go backend
-// Holds the prompt and the Claude API key on the server, not in the browser.
-
 const express = require('express');
 const cors = require('cors');
 
